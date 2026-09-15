@@ -1,0 +1,24 @@
+# 编译目录
+Debug/
+Release/
+build/
+cmake-build-*/
+
+# 编译生成文件
+*.o
+*.d
+*.elf
+*.hex
+*.bin
+*.map
+*.list
+*.su
+
+# 编辑器临时文件
+.vscode/
+.idea/
+*.tmp
+*.bak
+*~
+.DS_Store
+Thumbs.db
