@@ -11,6 +11,7 @@
 - 调试器：
 - IDE：STM32CubeIDE
 - 主教材：野火《STM32 HAL库开发实战指南》
+  教材链接：https://doc.embedfire.com/mcu/stm32/f103/hal_general/zh/latest/doc/chapter1/chapter1.html#id2
 
 ## 学习进度
 
