@@ -1,0 +1,695 @@
+# 1. GPIO 输入、输出、上拉、下拉
+
+## 1.1 GPIO 输出
+
+> 输出模式下，STM32 **主动**向引脚输出高电平或低电平，常用于控制：
+
+- LED；
+- 蜂鸣器；
+- 继电器；
+- 外设使能引脚。
+
+HAL 库控制输出：
+```c
+// 输出高电平
+HAL_GPIO_WritePin(LED_GPIO_Port, LED_Pin, GPIO_PIN_SET);
+
+// 输出低电平
+HAL_GPIO_WritePin(LED_GPIO_Port, LED_Pin, GPIO_PIN_RESET);
+
+// 翻转当前电平
+HAL_GPIO_TogglePin(LED_GPIO_Port, LED_Pin);
+```
+
+注意：高电平不一定代表设备开启。例如有些 LED 是低电平点亮；因此，必须结合开发板原理图判断
+
+### 推挽输出
+
+常用配置：
+
+```c
+GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
+```
+
+推挽输出既能主动输出高电平，也能主动输出低电平，适合控制 LED 等普通数字器件。
+
+---
+## 1.2 GPIO 输入
+
+输入模式下，STM32 不主动输出电平，而是读取外部电路提供的电平，常用于：
+
+- 按键；
+- 数字传感器；
+- 外部模块的状态信号。
+
+读取引脚：
+```c
+GPIO_PinState state;
+
+state = HAL_GPIO_ReadPin(KEY_GPIO_Port, KEY_Pin);
+```
+
+判断高低电平：
+```c
+// 当前为高电平 
+if (HAL_GPIO_ReadPin(KEY_GPIO_Port, KEY_Pin) == GPIO_PIN_SET){  }
+
+// 当前为低电平
+if (HAL_GPIO_ReadPin(KEY_GPIO_Port, KEY_Pin) == GPIO_PIN_RESET){  }
+```
+
+--- 
+## 1.3 上拉和下拉
+
+当输入引脚既没有接高电平，也没有接低电平时，引脚处于悬空状态，读出的结果可能随机变化。
+
+上拉和下拉的作用就是：**给没有外部输入时的引脚确定一个默认电平。**
+
+### 上拉
+
+通过电阻将输入引脚连接到电源：
+```
+3.3V
+  │
+ 电阻
+  │
+GPIO
+```
+
+默认状态：
+```
+GPIO = 高电平
+```
+
+如果按键按下后将引脚连接到 GND：
+```
+未按下 → 高电平
+按下   → 低电平
+```
+
+CubeMX/HAL 配置：
+```c
+GPIO_InitStruct.Pull = GPIO_PULLUP;
+```
+
+### 下拉
+
+通过电阻将输入引脚连接到 GND：
+```
+GPIO
+  │
+ 电阻
+  │
+ GND
+```
+
+默认状态：
+```
+GPIO = 低电平
+```
+
+如果按键按下后将引脚连接到 3.3V：
+```
+未按下 → 低电平
+按下   → 高电平
+```
+
+HAL 配置：
+```c
+GPIO_InitStruct.Pull = GPIO_PULLDOWN;
+```
+
+### 不上拉也不下拉
+```
+GPIO_InitStruct.Pull = GPIO_NOPULL;
+```
+
+如果开发板已经有外部上拉或下拉电阻，通常选择 `GPIO_NOPULL`，避免重复配置。
+# 2. 轮询与外部中断
+
+轮询和中断都是检测外部事件的方法。
+
+## 2.1 轮询
+
+轮询就是程序在主循环中反复检查引脚状态：
+```c
+while (1)
+{
+    if (HAL_GPIO_ReadPin(KEY1_GPIO_Port, KEY1_Pin) == GPIO_PIN_SET)
+    {
+        // 检测到按键按下
+    }
+}
+```
+
+程序的思路是：
+```
+检查按键 → 没按下 → 再检查 → 没按下 → 再检查……
+```
+
+### 优点
+- 简单直观；
+- 容易编写和调试；
+- 适合刚开始学习 GPIO；
+- 适合任务较少的小程序。
+
+### 缺点
+- CPU 要不断查询；
+- 主循环中任务较多时，可能无法及时检测；
+- 使用 `HAL_Delay()` 或等待松手时，会阻塞其他任务。
+
+例如：
+```c
+while (HAL_GPIO_ReadPin(GPIOx, GPIO_Pin) == GPIO_PIN_SET)
+{
+    // 一直等待按键松开
+}
+```
+此时程序暂时无法执行后面的其他任务。
+
+---
+
+## 2.2 外部中断
+
+外部中断是指：引脚电平发生指定变化时，硬件主动通知 CPU。
+
+正常情况下，CPU 可以继续执行其他任务；按键按下时，CPU 暂停当前任务，先处理中断。
+```
+执行主程序
+    ↓
+按键电平发生变化
+    ↓
+进入中断处理
+    ↓
+处理完成后返回主程序
+```
+
+STM32 中常见的 GPIO 外部中断模式：
+```c
+上升沿触发：低电平 → 高电平
+GPIO_MODE_IT_RISING
+
+下降沿触发：高电平 → 低电平
+GPIO_MODE_IT_FALLING
+
+上升沿和下降沿都触发：
+GPIO_MODE_IT_RISING_FALLING
+```
+
+在回调函数中判断哪个引脚触发：
+```c
+void HAL_GPIO_EXTI_Callback(uint16_t GPIO_Pin)
+{
+    if (GPIO_Pin == KEY1_Pin)
+    {
+        HAL_GPIO_TogglePin(LED_R_GPIO_Port, LED_R_Pin);
+    }
+}
+```
+> **中断负责“发现事件”，回调函数负责“处理事件”。**
+
+### 中断中的注意事项
+
+中断处理应尽量短，不建议在中断回调中：
+- 使用很长的 `HAL_Delay()`；
+- 使用 `while` 等待按键松开；
+- 执行大量计算；
+- 进行耗时通信。
+
+更合理的写法是设置标志位：
+```c
+volatile uint8_t key1_flag = 0;
+
+void HAL_GPIO_EXTI_Callback(uint16_t GPIO_Pin)
+{
+    if (GPIO_Pin == KEY1_Pin)
+    {
+        key1_flag = 1;
+    }
+}
+
+// 然后在主循环处理：
+while (1)
+{
+    if (key1_flag == 1)
+    {
+        key1_flag = 0;
+        HAL_GPIO_TogglePin(LED_R_GPIO_Port, LED_R_Pin);
+    }
+}
+```
+其中 `volatile` 表示这个变量可能被中断等程序流程意外修改，提醒编译器每次都从内存重新读取。
+
+> **标志位+主循环处理** ，几纳秒就完成了，不会阻塞其他中断，主循环有充足的时间，可以做消抖、复杂逻辑、耗时操作，不影响中断响应。
+
+## 2.3 两者对比
+
+| 对比项    | 轮询         | 外部中断         |
+| ------ | ---------- | ------------ |
+| 工作方式   | CPU 主动反复检查 | 事件发生后通知 CPU  |
+| 编程难度   | 简单         | 稍复杂          |
+| 响应速度   | 受主循环影响     | 通常更及时        |
+| CPU 占用 | 持续查询       | 平时不必查询       |
+| 适用场景   | 简单按键、小程序   | 紧急信号、及时响应    |
+| 消抖     | 主循环中处理     | 建议用时间戳或标志位处理 |
+
+# 3. 宏、条件编译和防重复包含
+
+> 宏使用 `#define` 定义，由预处理器在编译前进行文本替换。
+### 定义常量
+```c
+#define LED_ON   0
+#define LED_OFF  1
+
+// 程序中写：
+HAL_GPIO_WritePin(LED_R_GPIO_Port, LED_R_Pin, LED_OFF);
+```
+编译前，`LED_OFF` 会被替换成 `1`。
+
+STM32 工程中常见的引脚宏：
+```c
+#define KEY1_Pin       GPIO_PIN_0
+#define KEY1_GPIO_Port GPIOA
+
+HAL_GPIO_ReadPin(KEY1_GPIO_Port, KEY1_Pin);
+// 等价于
+HAL_GPIO_ReadPin(GPIOA, GPIO_PIN_0);
+```
+
+### 带参数的宏
+
+```c
+#define SQUARE(x) ((x) * (x))
+
+使用：
+int result = SQUARE(3);
+// 等价于
+int result = ((3) * (3));
+```
+> 带参数的宏要多加括号，防止运算优先级出错。
+
+错误写法：
+```c
+#define SQUARE(x) x * x
+
+// 当调用：
+SQUARE(1 + 2)
+
+// 可能展开为：
+1 + 2 * 1 + 2
+// 结果不再是 9
+```
+
+### 宏的特点
+
+- 编译前直接替换；
+- 没有变量类型；
+- 不占用函数调用开销；
+- 写法不慎容易产生错误。
+
+---
+
+## 3.2 条件编译
+
+> 编译器会根据条件，决定哪些代码参与编译、哪些代码直接被删除。
+
+它发生在程序编译之前，不是程序运行时的 `if`。
+### 1. `#ifdef`：如果定义了这个宏
+
+先定义一个宏：
+```c
+#define DEBUG
+```
+随后判断：
+```c
+#ifdef DEBUG
+printf("Debug information\r\n");
+#endif
+```
+含义是：
+> 如果之前定义了 `DEBUG`，就编译中间的代码。
+
+由于这里有：
+```c
+#define DEBUG
+```
+
+所以最终相当于：
+```c
+printf("Debug information\r\n");
+```
+
+如果把宏定义删除或注释：
+```c
+// #define DEBUG
+```
+那么 `printf` 不参与编译，效果相当于这行代码根本不存在。
+
+### 2. `#else`：两套代码二选一
+
+```c
+#define DEBUG
+
+#ifdef DEBUG
+printf("当前是调试版本\r\n");
+#else
+printf("当前是正式版本\r\n");
+#endif
+```
+
+由于定义了 `DEBUG`，所以参与编译的是：
+```c
+printf("当前是调试版本\r\n");
+```
+
+如果没有定义 `DEBUG`：
+```c
+// #define DEBUG
+```
+
+参与编译的就是：
+```c
+printf("当前是正式版本\r\n");
+```
+
+可以将其理解为：
+```c
+定义了 DEBUG     → 使用调试版本代码
+没有定义 DEBUG   → 使用正式版本代码
+```
+
+### 3. `#ifndef`：如果没有定义这个宏
+
+`ifndef` 是 **if not defined** 的缩写。
+```
+#ifndef DEBUG
+printf("DEBUG没有被定义\r\n");
+#endif
+```
+
+含义是：
+> 如果没有定义 `DEBUG`，就编译中间的代码。
+
+与 `#ifdef` 正好相反：
+
+|写法|含义|
+|---|---|
+|`#ifdef DEBUG`|定义了 `DEBUG` 时编译|
+|`#ifndef DEBUG`|没有定义 `DEBUG` 时编译|
+
+### 4. `#if`：判断宏的值
+
+```c
+#define USE_LED 1
+
+#if USE_LED
+HAL_GPIO_TogglePin(LED_R_GPIO_Port, LED_R_Pin);
+#endif
+```
+这里不仅关心 `USE_LED` 有没有定义，还要判断它的值。
+
+当：
+```c
+#define USE_LED 1
+```
+条件成立，LED代码参与编译。
+
+当：
+```c
+#define USE_LED 0
+```
+条件不成立，LED代码不参与编译。
+
+通常约定：
+```c
+1 → 开启功能
+0 → 关闭功能
+```
+
+所以可以通过修改一个数字控制功能：
+```c
+#define USE_LED 1       // 开启LED功能
+#define USE_UART 0      // 关闭串口功能
+#define USE_KEY 1       // 开启按键功能
+```
+
+然后：
+```c
+#if USE_LED
+    LED_Init();
+#endif
+
+#if USE_UART
+    UART_Init();
+#endif
+
+#if USE_KEY
+    KEY_Init();
+#endif
+```
+
+### 5. 它与普通 `if` 的区别
+
+普通 `if`：
+```c
+if (use_led == 1)
+{
+    LED_Init();
+}
+```
+这段代码已经被编译进程序，只是在**程序运行时**决定是否执行。
+
+条件编译：
+```c
+#define USE_LED 0
+
+#if USE_LED
+    LED_Init();
+#endif
+```
+编译器发现 `USE_LED` 是 `0`，就不会编译 `LED_Init()` 这行代码，它不会进入最终程序。
+
+|对比项|`if`|`#if` / `#ifdef`|
+|---|---|---|
+|判断时间|程序运行时|编译之前|
+|不满足条件的代码|存在，只是不执行|直接不参与编译|
+|常见用途|控制程序流程|开关功能、选择版本|
+### 6. 简单总结
+
+```
+#ifdef 宏名      // 如果定义了
+#ifndef 宏名     // 如果没有定义
+#if 宏的值       // 如果宏的值为真（通常为1）
+#else            // 否则
+#endif           // 条件编译结束
+```
+
+你目前只需要掌握最常见的两种写法：
+```
+#define DEBUG
+
+#ifdef DEBUG
+    // 调试代码
+#endif
+```
+
+以及：
+```
+#define USE_LED 1
+
+#if USE_LED
+    // LED功能代码
+#endif
+```
+
+---
+## 3.3 防重复包含
+
+假设 `key.h` 被多个文件间接包含，编译器可能反复看到同一批声明，造成重复定义等问题。
+
+因此，头文件通常这样写：
+```c
+#ifndef __KEY_H
+#define __KEY_H
+
+#include "main.h"
+
+uint8_t KEY_Scan(GPIO_TypeDef *GPIOx, uint16_t GPIO_Pin);
+
+#endif
+```
+
+执行逻辑：
+1. 检查 `__KEY_H` 是否已经定义；
+2. 如果没有定义，就定义 `__KEY_H` 并编译文件内容；
+3. 下一次再次包含时，发现已经定义；
+4. 跳过头文件内容。
+
+也就是：
+```
+第一次包含 → 正常读取
+第二次包含 → 自动跳过
+```
+
+### 为什么需要包含 `main.h`？
+
+因为下面这个函数声明使用了三个类型：
+```c
+uint8_t KEY_Scan(GPIO_TypeDef *GPIOx, uint16_t GPIO_Pin);
+```
+
+其中：
+```c
+uint8_t
+GPIO_TypeDef
+uint16_t
+```
+
+这些类型并不是 C 语言自动认识的，需要从其他头文件中获得定义。
+
+在 STM32CubeMX 生成的工程中，`main.h` 通常又包含了对应的 HAL 头文件，例如：
+```c
+#include "stm32f1xx_hal.h"
+```
+HAL 头文件中提供了：
+- `uint8_t`
+- `uint16_t`
+- `GPIO_TypeDef`
+- GPIO相关函数与宏
+
+所以：
+```c
+#include "main.h"
+```
+
+相当于告诉编译器：
+> 我接下来要用 STM32相关的数据类型和定义，请先把它们提供给我。
+
+# 4. 基本状态机思想
+
+状态机的核心思想是：
+> 程序在某一时刻处于一个明确状态，根据输入事件决定执行什么操作，以及切换到哪个状态。
+
+例如，LED 有两个状态：
+```c
+LED_OFF：熄灭
+LED_ON：点亮
+```
+
+按键每按下一次，状态发生切换：
+```c
+LED_OFF --按键按下--> LED_ON
+LED_ON  --按键按下--> LED_OFF
+```
+
+## 4.1 使用枚举表示状态
+```c
+typedef enum
+{
+    LED_STATE_OFF,
+    LED_STATE_ON
+} LED_State;
+```
+
+定义当前状态：
+```c
+LED_State led_state = LED_STATE_OFF;
+```
+
+根据按键切换状态：
+```c
+if (KEY_Scan(KEY1_GPIO_Port, KEY1_Pin) == 1)
+{
+    if (led_state == LED_STATE_OFF)
+    {
+        led_state = LED_STATE_ON;
+    }
+    else
+    {
+        led_state = LED_STATE_OFF;
+    }
+}
+```
+
+根据状态控制输出：
+```c
+switch (led_state)
+{
+    case LED_STATE_OFF:
+        HAL_GPIO_WritePin(
+            LED_R_GPIO_Port,
+            LED_R_Pin,
+            GPIO_PIN_SET
+        );
+        break;
+
+    case LED_STATE_ON:
+        HAL_GPIO_WritePin(
+            LED_R_GPIO_Port,
+            LED_R_Pin,
+            GPIO_PIN_RESET
+        );
+        break;
+
+    default:
+        led_state = LED_STATE_OFF;
+        break;
+}
+```
+假设这里的 LED 为低电平点亮。
+
+## 4.2 为什么需要状态机？
+
+>简单功能可以直接使用 `if`，但功能变多以后，大量互相嵌套的 `if` 会使逻辑混乱。
+
+例如一个设备可能有：
+```c
+typedef enum
+{
+    STATE_IDLE,      // 空闲
+    STATE_RUNNING,   // 运行
+    STATE_PAUSED,    // 暂停
+    STATE_ERROR      // 故障
+} SystemState;
+```
+
+主循环根据状态执行不同任务：
+```c
+switch (system_state)
+{
+    case STATE_IDLE:
+        // 等待启动
+        break;
+
+    case STATE_RUNNING:
+        // 正常运行
+        break;
+
+    case STATE_PAUSED:
+        // 暂停处理
+        break;
+
+    case STATE_ERROR:
+        // 故障处理
+        break;
+
+    default:
+        system_state = STATE_IDLE;
+        break;
+}
+```
+
+## 4.3 状态机的三个基本要素
+
+- **状态**：系统当前处于什么阶段；
+- **事件**：发生了什么，例如按键按下；
+- **状态转移**：事件发生后进入哪个新状态。
+
+例如：
+
+| 当前状态    | 事件      | 执行动作   | 下一状态    |
+| ------- | ------- | ------ | ------- |
+| LED_OFF | KEY1 按下 | 点亮 LED | LED_ON  |
+| LED_ON  | KEY1 按下 | 熄灭 LED | LED_OFF |
+
+>状态机不一定比简单代码更短，但能让复杂逻辑更加清楚，也更方便增加新功能。
